@@ -11,10 +11,12 @@ const VerifyEmail: React.FC = () => {
   const navigate = useNavigate();
   const [sending, setSending] = React.useState(false);
   const [countdown, setCountdown] = React.useState(0);
+  const [error, setError] = React.useState<string | null>(null);
   
   const handleSendVerification = async () => {
     try {
       setSending(true);
+      setError(null);
       await verifyEmail();
       setCountdown(60);
       
@@ -27,8 +29,12 @@ const VerifyEmail: React.FC = () => {
           return prev - 1;
         });
       }, 1000);
-    } catch (error) {
-      console.error('Error sending verification email:', error);
+    } catch (error: any) {
+      if (error.code === 'auth/too-many-requests') {
+        setError('Too many verification attempts. Please try again later.');
+      } else {
+        setError('Failed to send verification email. Please try again.');
+      }
     } finally {
       setSending(false);
     }
@@ -67,6 +73,12 @@ const VerifyEmail: React.FC = () => {
               Please check your email and click on the verification link to complete your registration. If you don't see the email, check your spam folder.
             </p>
           </div>
+
+          {error && (
+            <div className={`w-full p-4 rounded-lg mb-4 bg-red-100 dark:bg-red-900`}>
+              <p className="text-sm text-red-600 dark:text-red-200">{error}</p>
+            </div>
+          )}
           
           <button 
             onClick={handleSendVerification}
