@@ -1,43 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { collection, query, where, onSnapshot, addDoc, orderBy } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../context/AuthContext';
-import { Send, ArrowLeft, Plus } from 'lucide-react';
+import { Send, ArrowLeft, Plus, Search, User } from 'lucide-react';
+import { useTheme } from '../context/ThemeContext';
 
-const MessagesMobile: React.FC = () => {
+const Messages: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { darkMode } = useTheme();
 
   const [conversations, setConversations] = useState<any[]>([]);
   const [currentChat, setCurrentChat] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [messageText, setMessageText] = useState('');
-  const [isCreatingChat, setIsCreatingChat] = useState(false);
-  const [usersList, setUsersList] = useState<any[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [followedUsers, setFollowedUsers] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredUsers, setFilteredUsers] = useState<any[]>([]);
+  const [selectedUser, setSelectedUser] = useState<any>(null);
 
-  // Tüm kullanıcıları getir (kendi dışındakiler)
+  // Fetch conversations
   useEffect(() => {
     if (!user) return;
 
-    const q = query(collection(db, 'users'));
-    const unsubscribe = onSnapshot(q, snapshot => {
-      const allUsers = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(u => u.id !== user.uid); // Kendini listeden çıkar
-      setUsersList(allUsers);
-    });
+    const q = query(
+      collection(db, 'conversations'),
+      where('participants', 'array-contains', user.uid),
+      orderBy('lastMessage.timestamp', 'desc')
+    );
 
-    return () => unsubscribe();
-  }, [user]);
-
-  // Sohbetleri getir
-  useEffect(() => {
-    if (!user) return;
-
-    const q = query(collection(db, 'conversations'), where('participants', 'array-contains', user.uid));
     const unsubscribe = onSnapshot(q, snapshot => {
       const convs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setConversations(convs);
@@ -46,7 +40,33 @@ const MessagesMobile: React.FC = () => {
     return () => unsubscribe();
   }, [user]);
 
-  // Aktif sohbet ve mesajları getir
+  // Fetch followed users
+  useEffect(() => {
+    if (!user) return;
+
+    const fetchFollowedUsers = async () => {
+      const userDoc = await getDocs(query(collection(db, 'users'), where('followers', 'array-contains', user.uid)));
+      setFollowedUsers(userDoc.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    };
+
+    fetchFollowedUsers();
+  }, [user]);
+
+  // Filter users based on search query
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setFilteredUsers(followedUsers);
+      return;
+    }
+
+    const filtered = followedUsers.filter(user =>
+      user.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      user.displayName.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    setFilteredUsers(filtered);
+  }, [searchQuery, followedUsers]);
+
+  // Fetch current chat messages
   useEffect(() => {
     if (!id) {
       setCurrentChat(null);
@@ -54,7 +74,7 @@ const MessagesMobile: React.FC = () => {
       return;
     }
 
-    const conv = conversations.find(c => c.id === id) || null;
+    const conv = conversations.find(c => c.id === id);
     setCurrentChat(conv);
 
     if (!conv) return;
@@ -70,206 +90,253 @@ const MessagesMobile: React.FC = () => {
     return () => unsubscribe();
   }, [id, conversations]);
 
-  // Mesaj gönderme
+  const startNewChat = async (selectedUserId: string) => {
+    if (!user || !selectedUserId) return;
+
+    // Check if conversation already exists
+    const existingChat = conversations.find(conv => {
+      const participants = conv.participants as string[];
+      return participants.length === 2 &&
+        participants.includes(user.uid) &&
+        participants.includes(selectedUserId);
+    });
+
+    if (existingChat) {
+      navigate(`/messages/${existingChat.id}`);
+      setShowNewChat(false);
+      setSelectedUser(null);
+      return;
+    }
+
+    // Create new conversation
+    const convRef = await addDoc(collection(db, 'conversations'), {
+      participants: [user.uid, selectedUserId],
+      lastMessage: {
+        text: '',
+        senderId: '',
+        timestamp: new Date()
+      },
+      createdAt: new Date()
+    });
+
+    setShowNewChat(false);
+    setSelectedUser(null);
+    navigate(`/messages/${convRef.id}`);
+  };
+
   const sendMessage = async () => {
     if (!messageText.trim() || !currentChat || !user) return;
 
     const messagesRef = collection(db, 'conversations', currentChat.id, 'messages');
-
-    await addDoc(messagesRef, {
+    const message = {
       senderId: user.uid,
       text: messageText.trim(),
-      timestamp: new Date(),
-    });
+      timestamp: new Date()
+    };
 
+    await addDoc(messagesRef, message);
     setMessageText('');
   };
 
-  // Yeni sohbet oluşturma
-  const createNewChat = async () => {
-    if (!selectedUserId || !user) return;
-
-    // Önce böyle bir sohbet var mı kontrol et (participants aynı 2 kullanıcı)
-    const existingChat = conversations.find(conv => {
-      const participants = conv.participants as string[];
-      return (
-        participants.length === 2 &&
-        participants.includes(user.uid) &&
-        participants.includes(selectedUserId)
-      );
-    });
-
-    if (existingChat) {
-      // Zaten varsa o sohbeti aç
-      navigate(`/messages/${existingChat.id}`);
-      setIsCreatingChat(false);
-      setSelectedUserId(null);
-      return;
-    }
-
-    // Yeni sohbet oluştur
-    const convRef = await addDoc(collection(db, 'conversations'), {
-      participants: [user.uid, selectedUserId],
-      createdAt: new Date(),
-      // Başlık opsiyonel, otomatik oluşturabiliriz:
-      title: null,
-    });
-
-    setIsCreatingChat(false);
-    setSelectedUserId(null);
-
-    navigate(`/messages/${convRef.id}`);
-  };
-
   return (
-    <div className="h-screen flex flex-col bg-white dark:bg-gray-900">
-      <header className="flex items-center p-4 border-b border-gray-200 dark:border-gray-700">
-        {currentChat ? (
-          <button
-            onClick={() => navigate('/messages')}
-            aria-label="Geri"
-            className="mr-3 p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
-          >
-            <ArrowLeft size={24} />
-          </button>
-        ) : null}
-        <h1 className="text-lg font-semibold flex-grow">
-          {currentChat
-            ? currentChat.title ||
-              usersList.find(u => currentChat.participants.includes(u.id))?.displayName ||
-              'Sohbet'
-            : 'Mesajlar'}
-        </h1>
+    <div className={`h-[calc(100vh-4rem)] flex flex-col ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
+      {showNewChat ? (
+        <div className="flex flex-col h-full">
+          <div className="p-4 border-b dark:border-gray-700 flex items-center justify-between">
+            <button
+              onClick={() => setShowNewChat(false)}
+              className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+            >
+              <ArrowLeft size={24} />
+            </button>
+            <h2 className="text-lg font-semibold">New Message</h2>
+            <div className="w-10" /> {/* Spacer for alignment */}
+          </div>
 
-        {!currentChat && (
-          <button
-            onClick={() => setIsCreatingChat(true)}
-            aria-label="Yeni Sohbet Başlat"
-            className="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
-          >
-            <Plus size={24} />
-          </button>
-        )}
-      </header>
+          <div className="p-4">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={`w-full pl-10 pr-4 py-2 rounded-lg ${
+                  darkMode
+                    ? 'bg-gray-800 text-white placeholder-gray-400'
+                    : 'bg-white text-gray-900 placeholder-gray-500'
+                } border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500`}
+              />
+              <Search className="absolute left-3 top-2.5 w-5 h-5 text-gray-400" />
+            </div>
+          </div>
 
-      <main className="flex-1 overflow-auto">
-        {!currentChat ? (
-          <>
-            {isCreatingChat ? (
-              <div className="p-4">
-                <h2 className="mb-2 font-semibold">Kullanıcı Seç</h2>
-                <ul className="max-h-60 overflow-auto border border-gray-300 dark:border-gray-700 rounded">
-                  {usersList.length === 0 ? (
-                    <li className="p-2 text-gray-500">Kullanıcı bulunamadı.</li>
-                  ) : (
-                    usersList.map(u => (
-                      <li
-                        key={u.id}
-                        className={`p-2 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 ${
-                          selectedUserId === u.id ? 'bg-purple-600 text-white' : ''
-                        }`}
-                        onClick={() => setSelectedUserId(u.id)}
-                      >
-                        {u.displayName || u.email || 'İsimsiz Kullanıcı'}
-                      </li>
-                    ))
-                  )}
-                </ul>
-                <div className="mt-4 flex space-x-2">
-                  <button
-                    disabled={!selectedUserId}
-                    onClick={createNewChat}
-                    className="flex-1 bg-purple-600 disabled:bg-purple-400 text-white px-4 py-2 rounded hover:bg-purple-700 transition"
+          <div className="flex-1 overflow-y-auto">
+            {filteredUsers.length > 0 ? (
+              filteredUsers.map(user => (
+                <button
+                  key={user.id}
+                  onClick={() => startNewChat(user.id)}
+                  className={`w-full p-4 flex items-center space-x-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition`}
+                >
+                  <div className="w-12 h-12 rounded-full overflow-hidden bg-purple-500 flex items-center justify-center">
+                    {user.photoURL ? (
+                      <img src={user.photoURL} alt={user.displayName} className="w-full h-full object-cover" />
+                    ) : (
+                      <User size={24} className="text-white" />
+                    )}
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="font-medium">{user.displayName}</div>
+                    <div className="text-sm text-gray-500">@{user.username}</div>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="p-4 text-center text-gray-500">
+                No users found
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex h-full">
+          {/* Conversations List */}
+          <div className={`w-full md:w-80 border-r dark:border-gray-700 ${currentChat ? 'hidden md:block' : ''}`}>
+            <div className="p-4 border-b dark:border-gray-700 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Messages</h2>
+              <button
+                onClick={() => setShowNewChat(true)}
+                className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+              >
+                <Plus size={24} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto h-[calc(100%-4rem)]">
+              {conversations.map(conv => {
+                const otherParticipant = conv.participants.find((p: string) => p !== user?.uid);
+                const otherUser = followedUsers.find(u => u.id === otherParticipant);
+
+                return (
+                  <Link
+                    key={conv.id}
+                    to={`/messages/${conv.id}`}
+                    className={`block p-4 border-b dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition ${
+                      conv.id === id ? 'bg-gray-100 dark:bg-gray-800' : ''
+                    }`}
                   >
-                    Sohbet Başlat
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsCreatingChat(false);
-                      setSelectedUserId(null);
+                    <div className="flex items-center space-x-3">
+                      <div className="w-12 h-12 rounded-full overflow-hidden bg-purple-500 flex items-center justify-center">
+                        {otherUser?.photoURL ? (
+                          <img src={otherUser.photoURL} alt={otherUser.displayName} className="w-full h-full object-cover" />
+                        ) : (
+                          <User size={24} className="text-white" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-medium">{otherUser?.displayName || 'Unknown User'}</div>
+                        <div className="text-sm text-gray-500">
+                          {conv.lastMessage?.text || 'No messages yet'}
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Chat Area */}
+          {currentChat ? (
+            <div className="flex-1 flex flex-col h-full">
+              <div className="p-4 border-b dark:border-gray-700 flex items-center space-x-3">
+                <button
+                  onClick={() => navigate('/messages')}
+                  className="md:hidden p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"
+                >
+                  <ArrowLeft size={24} />
+                </button>
+                {currentChat && (
+                  <>
+                    <div className="w-10 h-10 rounded-full overflow-hidden bg-purple-500 flex items-center justify-center">
+                      <User size={20} className="text-white" />
+                    </div>
+                    <div>
+                      <div className="font-medium">
+                        {followedUsers.find(u => currentChat.participants.includes(u.id))?.displayName || 'Unknown User'}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        @{followedUsers.find(u => currentChat.participants.includes(u.id))?.username}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {messages.map(msg => (
+                  <div
+                    key={msg.id}
+                    className={`flex ${msg.senderId === user?.uid ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[70%] px-4 py-2 rounded-lg ${
+                        msg.senderId === user?.uid
+                          ? 'bg-purple-500 text-white'
+                          : darkMode
+                          ? 'bg-gray-800'
+                          : 'bg-gray-200'
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="p-4 border-t dark:border-gray-700">
+                <div className="flex space-x-2">
+                  <input
+                    type="text"
+                    value={messageText}
+                    onChange={(e) => setMessageText(e.target.value)}
+                    placeholder="Type a message..."
+                    className={`flex-1 px-4 py-2 rounded-lg ${
+                      darkMode
+                        ? 'bg-gray-800 text-white placeholder-gray-400'
+                        : 'bg-white text-gray-900 placeholder-gray-500'
+                    } border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendMessage();
+                      }
                     }}
-                    className="flex-1 border border-gray-400 dark:border-gray-600 rounded px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  />
+                  <button
+                    onClick={sendMessage}
+                    disabled={!messageText.trim()}
+                    className="p-2 rounded-lg bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    İptal
+                    <Send size={20} />
                   </button>
                 </div>
               </div>
-            ) : (
-              <ul>
-                {conversations.length === 0 ? (
-                  <p className="p-4 text-center text-gray-500">Sohbet yok</p>
-                ) : (
-                  conversations.map(conv => {
-                    // Sohbet başlığını belirle, ya title ya da katılımcı adı
-                    let title = conv.title;
-                    if (!title) {
-                      const otherUserId = user
-                        ? conv.participants.find((pid: string) => pid !== user.uid)
-                        : null;
-                      const otherUser = usersList.find(u => u.id === otherUserId);
-                      title = otherUser?.displayName || 'Sohbet';
-                    }
-
-                    return (
-                      <li key={conv.id}>
-                        <Link
-                          to={`/messages/${conv.id}`}
-                          className="block p-4 border-b border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
-                        >
-                          {title}
-                        </Link>
-                      </li>
-                    );
-                  })
-                )}
-              </ul>
-            )}
-          </>
-        ) : (
-          <div className="flex flex-col h-full">
-            <div className="flex-1 overflow-auto p-4 space-y-3">
-              {messages.length === 0 ? (
-                <p className="text-center text-gray-500 mt-10">Henüz mesaj yok</p>
-              ) : (
-                messages.map(msg => (
-                  <div
-                    key={msg.id}
-                    className={`max-w-xs px-3 py-2 rounded-lg break-words ${
-                      msg.senderId === user?.uid
-                        ? 'bg-purple-600 text-white self-end'
-                        : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 self-start'
-                    }`}
-                  >
-                    {msg.text}
-                  </div>
-                ))
-              )}
             </div>
-
-            <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex items-center space-x-2">
-              <input
-                type="text"
-                className="flex-1 rounded border border-gray-300 dark:border-gray-600 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 dark:bg-gray-800"
-                placeholder="Mesaj yaz..."
-                value={messageText}
-                onChange={e => setMessageText(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') sendMessage();
-                }}
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!messageText.trim()}
-                className="bg-purple-600 disabled:bg-purple-400 text-white px-4 py-2 rounded hover:bg-purple-700 transition"
-              >
-                <Send size={20} />
-              </button>
+          ) : (
+            <div className="hidden md:flex flex-1 items-center justify-center">
+              <div className="text-center">
+                <h3 className="text-xl font-medium mb-2">Select a conversation</h3>
+                <p className="text-gray-500">
+                  Choose from your existing conversations or start a new one
+                </p>
+              </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
-export default MessagesMobile;
+export default Messages;
